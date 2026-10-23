@@ -18,8 +18,10 @@
 #include "nfc_14a.h"
 #include "tag_emulation.h"
 
-/* Maximum APDU size (FSCI=8 → FSC=256, minus PCB+CRC = 253) */
-#define NFC_14A_4_MAX_APDU  260  /* max APDU in RAM; flash entries capped at 253 */
+/* Complete ISO7816 messages. ISO-DEP block chaining carries larger messages. */
+#define NFC_14A_4_MAX_CAPDU  297
+#define NFC_14A_4_MAX_RAPDU  4088
+#define NFC_14A_4_MAX_APDU   NFC_14A_4_MAX_CAPDU
 
 /* Static APDU response table — up to 12 pre-configured command/response pairs.
  * Loaded before field activation; firmware responds autonomously without USB. */
@@ -64,10 +66,30 @@ void nfc_tag_14a_4_clear_static_responses(void);
 /* APDU relay — host-driven responses */
 bool nfc_tag_14a_4_get_pending_apdu(uint8_t *buf, uint16_t *length);
 void nfc_tag_14a_4_set_response(const uint8_t *data, uint16_t length);
+bool nfc_tag_14a_4_submit_response(const uint8_t *data, uint16_t length);
+
+typedef struct {
+    /* Session callbacks describe ISO-DEP activation. FIELD_ON is emitted
+     * after a valid RATS, so raw RF polling pulses are intentionally hidden. */
+    void (*on_field_on)(void);
+    void (*on_field_off)(void);
+    bool (*on_capdu)(const uint8_t *capdu, uint16_t length);
+} nfc_tag_14a_4_runtime_callbacks_t;
+
+/* Transient profiles never touch the slot buffer or flash. The caller owns
+ * RF sense and device-mode transitions around install/uninstall. */
+bool nfc_tag_14a_4_runtime_install(
+    const nfc_tag_14a_coll_res_entity_t *profile,
+    const nfc_tag_14a_4_runtime_callbacks_t *callbacks);
+void nfc_tag_14a_4_runtime_uninstall(void);
+bool nfc_tag_14a_4_runtime_is_installed(void);
+void nfc_tag_14a_4_abort(void);
 
 /* Reset handler */
 void nfc_tag_14a_4_reset_handler(void);
 
-#endif /* NFC_14A_4_H */
+void nfc_tag_14a_4_get_debug_counters(uint8_t *rx, uint8_t *tx,
+                                      uint8_t *last_pcb,
+                                      uint8_t *last_match);
 
-void nfc_tag_14a_4_get_debug_counters(uint8_t *rx, uint8_t *tx, uint8_t *last_pcb, uint8_t *last_match);
+#endif /* NFC_14A_4_H */

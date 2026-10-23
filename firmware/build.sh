@@ -24,7 +24,11 @@ echo "Building firmware for $device_type (hw_version=$hw_version)"
 
 set -xe
 
-rm -rf "objects"
+if [[ -d objects ]]; then
+  find objects -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+else
+  mkdir -p objects
+fi
 
 (
   cd bootloader

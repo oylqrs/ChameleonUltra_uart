@@ -28,6 +28,7 @@ NRF_LOG_MODULE_REGISTER();
 
 #include "app_cmd.h"
 #include "ble_main.h"
+#include "ble_hid_keyboard.h"
 #include "bsp_delay.h"
 #include "bsp_time.h"
 #include "bsp_wdt.h"
@@ -38,6 +39,8 @@ NRF_LOG_MODULE_REGISTER();
 #include "syssleep.h"
 #include "tag_emulation.h"
 #include "usb_main.h"
+#include "urat_esp/uart_esp.h"
+#include "urat_esp/nfc_fido_bridge.h"
 #include "rgb_marquee.h"
 #include "tag_persistence.h"
 #include "settings.h"
@@ -292,15 +295,7 @@ static void system_off_enter(void) {
     tag_emulation_save();
 
     if (g_is_low_battery_shutdown) {
-        // Don't create too complex animations, just blink LED1 three times.
         rgb_marquee_stop();
-        set_slot_light_color(RGB_RED);
-        for (uint8_t i = 0; i <= 3; i++) {
-            nrf_gpio_pin_set(LED_1);
-            bsp_delay_ms(100);
-            nrf_gpio_pin_clear(LED_1);
-            bsp_delay_ms(100);
-        }
     } else {
         // close all led.
         uint32_t *p_led_array = hw_get_led_array();
@@ -377,7 +372,6 @@ static void system_off_enter(void) {
 #if defined(PROJECT_CHAMELEON_ULTRA)
         HF_ANT_SEL,
 #endif
-        LED_FIELD, LED_R, LED_G, LED_B,
     };
     for (int i = 0; i < ARRAY_SIZE(gpio_cfg_output_high); i++) {
         nrf_gpio_cfg_output(gpio_cfg_output_high[i]);
@@ -386,7 +380,7 @@ static void system_off_enter(void) {
 
     // IOs that need to be configured as push-pull outputs and pulled low
     uint32_t gpio_cfg_output_low[] = {
-        LED_1, LED_2, LED_3, LED_4, LED_5, LED_6, LED_7, LED_8, LF_MOD,
+        LF_MOD,
 #if defined(PROJECT_CHAMELEON_ULTRA)
         READER_POWER, LF_ANT_DRIVER
 #endif
@@ -403,6 +397,10 @@ static void system_off_enter(void) {
     NRF_LOG_INFO("Sleep finally, Bye ^.^");
     // Turn off all soft timers
     app_timer_stop_all();
+
+    /* Add ESP32 UART RX as a System OFF wake source. The first low start bit
+     * asserts GPIO DETECT and resets the nRF52840. */
+    uart_esp_prepare_system_off();
 
     // Check whether there are low -frequency fields, solving very strong field signals during dormancy have always caused the comparator to be at a high level input state, so that the problem of uprising the rising edge cannot be awakened.
     if (is_lf_field_exists()) {
@@ -454,7 +452,7 @@ static void check_wakeup_src(void) {
      * If the wake-up source is a button, then you need to turn on BLE broadcast until the button stops clicking after a period of time to hibernate
      * If the wake-up source is the field of the analog card, it is not necessary to turn on BLE broadcast until the analog card ends and then hibernate.
      * If the wake-up source is USB, then keep BLE on and no hibernation until USB is unplugged
-     * If the wakeup source is the first time to access the battery, then do nothing and go directly to hibernation
+     * On first power without USB, wait for the ESP32-P4 battery polling window before hibernating.
      *
      * Hint: The above; logic is the logic processed in the wake-up phase, the rest of the logic is converted to the runtime processing phase
      */
@@ -464,6 +462,12 @@ static void check_wakeup_src(void) {
     uint8_t color = get_color_by_slot(slot);
 
     if (m_reset_source & NRF_POWER_RESETREAS_OFF_MASK) {
+        if (uart_esp_was_wakeup()) {
+            NRF_LOG_INFO("WakeUp from ESP32 UART");
+            sleep_timer_start(SLEEP_DELAY_MS_ESP_BATTERY_IDLE);
+            return;
+        }
+
         NRF_LOG_INFO("WakeUp from button");
         advertising_start(false); // Turn on Bluetooth radio
 
@@ -566,7 +570,7 @@ static void check_wakeup_src(void) {
             // usb plugged in can broadcast BLE at will
             advertising_start(false);
         } else {
-            sleep_timer_start(SLEEP_DELAY_MS_FIRST_POWER); // Wait a while and go straight to hibernation, do nothing
+            sleep_timer_start(SLEEP_DELAY_MS_ESP_BATTERY_IDLE); // Wait for ESP32-P4 battery polling before hibernating
         }
     }
 }
@@ -837,6 +841,8 @@ static void btn_fn_copy_ic_uid(void) {
 /**@brief Execute the corresponding logic based on the functional settings of the buttons.
  */
 static void run_button_function_by_settings(settings_button_function_t sbf) {
+    if (nfc_fido_bridge_is_active()) return;
+
     switch (sbf) {
         case SettingsButtonCycleSlot:
             cycle_slot(false);
@@ -984,7 +990,8 @@ static void blink_usb_led_status(void) {
 }
 
 static void lesc_event_process(void) {
-    if (settings_get_ble_pairing_enable_first_load()) {
+    if (settings_get_ble_pairing_enable_first_load() ||
+            ble_hid_keyboard_pairing_allowed()) {
         ret_code_t err_code;
         err_code = nrf_ble_lesc_request_handler();
         APP_ERROR_CHECK(err_code);
@@ -992,9 +999,7 @@ static void lesc_event_process(void) {
 }
 
 static void ble_passkey_init(void) {
-    if (settings_get_ble_pairing_enable_first_load()) {
-        set_ble_connect_key(settings_get_ble_connect_key());
-    }
+    set_ble_connect_key(settings_get_ble_connect_key());
 }
 
 /**@brief Application main function.
@@ -1011,6 +1016,7 @@ int main(void) {
     app_timers_init();        // Initialize soft timer
     power_management_init();  // Power management initialization
     usb_cdc_init();           // USB cdc emulation initialization
+    uart_esp_init();          // External UART command interface (P0.06 TX/P0.08 RX)
     ble_slave_init();         // Bluetooth protocol stack initialization
 
     rng_drv_and_srand_init(); // Random number generator initialization
@@ -1053,6 +1059,7 @@ int main(void) {
 
         // Data pack process
         data_frame_process();
+        nfc_fido_bridge_process();
         // Log print process
         while (NRF_LOG_PROCESS());
         // USB event process

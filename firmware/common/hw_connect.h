@@ -95,9 +95,9 @@ extern uint32_t g_reader_power;
 #endif
 
 
-// Operational Definitions for General Field Lights
-#define TAG_FIELD_LED_ON()     nrf_gpio_pin_clear(LED_FIELD);
-#define TAG_FIELD_LED_OFF()    nrf_gpio_pin_set(LED_FIELD);
+// LED control is disabled. Keep these macros as no-ops for existing callers.
+#define TAG_FIELD_LED_ON()     do { } while (0)
+#define TAG_FIELD_LED_OFF()    do { } while (0)
 
 
 void hw_connect_init(void);

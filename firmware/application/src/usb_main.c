@@ -70,7 +70,7 @@ static void cdc_acm_user_ev_handler(app_usbd_class_inst_t const *p_inst, app_usb
         case APP_USBD_CDC_ACM_USER_EVT_RX_DONE: {
             // Get amount of data transfered to process data
             size_t size = app_usbd_cdc_acm_rx_size(&m_app_cdc_acm);
-            data_frame_receive(cdc_data_buffer, size);
+            data_frame_receive_from(DATA_FRAME_SOURCE_USB, cdc_data_buffer, size);
 
             // Setup next transfer
             ret_code_t ret = app_usbd_cdc_acm_read_any(&m_app_cdc_acm, cdc_data_buffer, sizeof(cdc_data_buffer));

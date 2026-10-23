@@ -48,6 +48,7 @@
 #define DATA_CMD_GET_ALL_SLOT_NICKS             (1038)
 #define DATA_CMD_GET_SLEEP_TIMEOUT              (1039)
 #define DATA_CMD_SET_SLEEP_TIMEOUT              (1040)
+#define DATA_CMD_GET_DEVICE_CHIP_TEMPERATURE    (1041)
 
 //
 // ******************************************************************
@@ -184,6 +185,18 @@
 #define DATA_CMD_HF14A_4_STATIC_RESP            (6003)  /* add/clear static APDU response pair */
 #define DATA_CMD_HF14A_4_READER_APDU            (6004)  /* select+RATS+send APDU, keep field   */
 #define DATA_CMD_HF14A_4_EMV_SCAN               (6005)  /* full EMV scan in one call            */
+
+/* Private ESP32-P4 NFC FIDO bridge commands. */
+#define DATA_CMD_NFC_FIDO_CONFIGURE              (0x7F00)
+#define DATA_CMD_NFC_FIDO_POLL                   (0x7F01)
+#define DATA_CMD_NFC_FIDO_RESPONSE               (0x7F02)
+#define DATA_CMD_NFC_FIDO_RESET                  (0x7F03)
+
+/* Private ESP32-P4 BLE HID keyboard commands. */
+#define DATA_CMD_BLE_HID_CONFIGURE               (0x7F10)
+#define DATA_CMD_BLE_HID_SEND_REPORT             (0x7F11)
+#define DATA_CMD_BLE_HID_RELEASE_ALL             (0x7F12)
+#define DATA_CMD_BLE_HID_GET_STATUS              (0x7F13)
 
 #define DATA_CMD_EM410X_SET_EMU_ID              (5000)
 #define DATA_CMD_EM410X_GET_EMU_ID              (5001)

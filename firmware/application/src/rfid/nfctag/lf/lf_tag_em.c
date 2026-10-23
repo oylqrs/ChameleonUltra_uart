@@ -4,8 +4,8 @@
 
 #include "bsp_delay.h"
 #include "fds_util.h"
+#include "nrf_drv_clock.h"
 #include "nrf_gpio.h"
-#include "nrf_soc.h"
 #include "nrfx_lpcomp.h"
 #include "nrfx_pwm.h"
 #include "protocols/em410x.h"
@@ -32,6 +32,7 @@ extern bool g_usb_led_marquee_enable;
 
 // Whether it is currently in the low -frequency card number of broadcasting
 static volatile bool m_is_lf_emulating = false;
+static bool m_lf_hfclk_requested;
 // Cache tag type
 static tag_specific_type_t m_tag_type = TAG_TYPE_UNDEFINED;
 
@@ -43,7 +44,7 @@ static void lf_field_lost(void) {
     // Open the incident interruption, so that the next event can be in and out normally
     g_is_tag_emulating = false;  // Reset the flag in the emulation
     m_is_lf_emulating = false;
-    TAG_FIELD_LED_OFF()  // Make sure the indicator light of the LF field status
+    TAG_FIELD_LED_OFF();  // Make sure the indicator light of the LF field status
     // Re-arm LPCOMP so the next field appearance triggers lpcomp_event_handler.
     NRF_LPCOMP->INTENSET = LPCOMP_INTENSET_UP_Msk;
     // call sleep_timer_start *after* unsetting g_is_tag_emulating
@@ -89,7 +90,7 @@ static void lpcomp_event_handler(nrf_lpcomp_event_t event) {
 
     // LED status update
     set_slot_light_color(RGB_BLUE);
-    TAG_FIELD_LED_ON()
+    TAG_FIELD_LED_ON();
 
     // Play a finite burst then stop — field check happens in EVT_STOPPED after
     // PWM has fully released LF_MOD, so ANT_NO_MOD() and the settle delay are
@@ -163,13 +164,16 @@ static void lf_sense_enable(void) {
     // which rules out coherent demodulation or phase-lock-based approaches,
     // but does not preclude the differential-phase encodings supported here.
     //
-    // Paired release in lf_sense_disable(). SD reference-counts HFXO requests,
-    // so this coexists with BLE. Both functions run from thread context
-    // (tag_mode_enter/tag_emulation_sense_end) where SVCs are safe.
-    sd_clock_hfclk_request();
-    uint32_t hfclk_running = 0;
-    while (!hfclk_running) {
-        sd_clock_hfclk_is_running(&hfclk_running);
+    // Paired release in lf_sense_disable(). Use the shared clock driver so LF,
+    // HF NFC, USB, and SoftDevice all observe the same request count.
+    if (!nrf_drv_clock_init_check()) {
+        ret_code_t clock_result = nrf_drv_clock_init();
+        APP_ERROR_CHECK_BOOL(clock_result == NRF_SUCCESS ||
+                             clock_result == NRF_ERROR_MODULE_ALREADY_INITIALIZED);
+    }
+    m_lf_hfclk_requested = true;
+    nrf_drv_clock_hfclk_request(NULL);
+    while (!nrf_drv_clock_hfclk_is_running()) {
     }
 
     lpcomp_init();
@@ -184,7 +188,10 @@ static void lf_sense_disable(void) {
     nrfx_lpcomp_uninit();
     m_pwm_seq = NULL;
     m_is_lf_emulating = false;
-    sd_clock_hfclk_release();
+    if (m_lf_hfclk_requested) {
+        m_lf_hfclk_requested = false;
+        nrf_drv_clock_hfclk_release();
+    }
 }
 
 static enum {

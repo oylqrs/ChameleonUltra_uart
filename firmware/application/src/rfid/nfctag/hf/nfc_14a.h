@@ -3,7 +3,7 @@
 
 #include "tag_emulation.h"
 
-#define MAX_NFC_RX_BUFFER_SIZE  257
+#define MAX_NFC_RX_BUFFER_SIZE  288  /* 256 RF bytes with one parity bit each */
 #define MAX_NFC_TX_BUFFER_SIZE  512  /* must hold PCB + max APDU response */
 
 #define NFC_TAG_14A_CRC_LENGTH  2
@@ -83,6 +83,8 @@ typedef struct {
 
 // Communication reception function that needs to be implemented
 typedef void (*nfc_tag_14a_reset_handler_t)(void);
+typedef void (*nfc_tag_14a_field_handler_t)(void);
+typedef void (*nfc_tag_14a_rats_handler_t)(uint16_t fsd, uint8_t cid);
 
 /* Sniff callback — called for every received frame before the tag handler.
  * data    : raw frame bytes (after parity strip)
@@ -112,6 +114,9 @@ typedef struct {
     nfc_tag_14a_reset_handler_t cb_reset;
     nfc_tag_14a_state_handler_t cb_state;
     nfc_tag_14a_coll_handler_t get_coll_res;
+    nfc_tag_14a_field_handler_t cb_field_on;
+    nfc_tag_14a_field_handler_t cb_field_off;
+    nfc_tag_14a_rats_handler_t cb_rats;
 } nfc_tag_14a_handler_t;
 
 // Different or verification code
@@ -123,16 +128,19 @@ void nfc_tag_14a_append_crc(uint8_t *pbtData, size_t szLen);
 bool nfc_tag_14a_checks_crc(uint8_t *pbtData, size_t szLen);
 
 // 14A frame combination
-uint8_t nfc_tag_14a_wrap_frame(const uint8_t *pbtTx, const size_t szTxBits, const uint8_t *pbtTxPar, uint8_t *pbtFrame);
-uint8_t nfc_tag_14a_unwrap_frame(const uint8_t *pbtFrame, const size_t szFrameBits, uint8_t *pbtRx, uint8_t *pbtRxPar);
+uint16_t nfc_tag_14a_wrap_frame(const uint8_t *pbtTx, const size_t szTxBits, const uint8_t *pbtTxPar, uint8_t *pbtFrame);
+uint16_t nfc_tag_14a_unwrap_frame(const uint8_t *pbtFrame, const size_t szFrameBits, uint8_t *pbtRx, uint8_t *pbtRxPar);
 
 // 14A communication control
 void nfc_tag_14a_sense_switch(bool enable);
 void nfc_tag_14a_set_handler(nfc_tag_14a_handler_t *handler);
+void nfc_tag_14a_get_handler(nfc_tag_14a_handler_t *handler);
 void nfc_tag_14a_set_state(nfc_tag_14a_state_t state);
 void nfc_tag_14a_tx_bytes(uint8_t *data, uint32_t bytes, bool appendCrc);
+void nfc_tag_14a_tx_bytes_now(uint8_t *data, uint32_t bytes, bool appendCrc);
 void nfc_tag_14a_tx_bits(uint8_t *data, uint32_t bits);
 void nfc_tag_14a_tx_nbit(uint8_t data, uint32_t bits);
+void nfc_tag_14a_abort_tx(void);
 
 // Determine whether it is an effective UID length
 bool is_valid_uid_size(uint8_t uid_length);

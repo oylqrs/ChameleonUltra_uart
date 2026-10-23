@@ -62,6 +62,7 @@ typedef struct
     bool               fieldevents_filter_active; /**< Flag that indicates that the field events are ignored. */
     bool               is_hfclk_on;               /**< HFCLK has started - one of the NFC activation conditions. */
     bool               is_delayed;                /**< Required time delay has passed - one of the NFC activation conditions. */
+    bool               is_field_validation_pending; /**< Second activation-delay validation is pending. */
 #else
     uint32_t           field_state_cnt;           /**< Counter of the FIELDLOST events. */
 #endif // defined(NRF52833_XXAA) || defined(NRF52840_XXAA)
@@ -270,11 +271,9 @@ static void nrfx_nfct_field_event_handler(volatile nrfx_nfct_field_state_t field
 #if defined(NRF52833_XXAA) || defined(NRF52840_XXAA)
 static void nrfx_nfct_activate_check(void)
 {
-    static bool is_field_validation_pending = false;
-
-    if (is_field_validation_pending)
+    if (m_timer_workaround.is_field_validation_pending)
     {
-        is_field_validation_pending                  = false;
+        m_timer_workaround.is_field_validation_pending = false;
         m_timer_workaround.fieldevents_filter_active = false;
 
         // Check the field status and take action if field is lost.
@@ -285,7 +284,7 @@ static void nrfx_nfct_activate_check(void)
     if ((m_timer_workaround.is_hfclk_on) && (m_timer_workaround.is_delayed))
     {
         nrf_nfct_task_trigger(NRF_NFCT_TASK_ACTIVATE);
-        is_field_validation_pending = true;
+        m_timer_workaround.is_field_validation_pending = true;
 
         // Start the timer second time to validate whether the tag has locked to the field.
         nrfx_timer_clear(&m_timer_workaround.timer);
@@ -415,6 +414,10 @@ static inline nrfx_err_t nrfx_nfct_field_timer_config(void)
  * @param arg Unused
  */
 static void timer_nfc_close_handle(void *arg) {
+    if (m_nfct_cb.state != NRFX_DRV_STATE_INITIALIZED)
+    {
+        return;
+    }
     NRFX_CRITICAL_SECTION_ENTER();
     nrf_nfct_task_trigger(NRF_NFCT_TASK_SENSE);
     NRFX_CRITICAL_SECTION_EXIT();
@@ -456,7 +459,14 @@ nrfx_err_t nrfx_nfct_init(nrfx_nfct_config_t const * p_config)
         return NRFX_ERROR_INVALID_STATE;
     }
 
-    m_nfct_cb.config = *p_config;
+    m_nfct_cb.config   = *p_config;
+    m_nfct_cb.field_on = false;
+#if defined(NRF52833_XXAA) || defined(NRF52840_XXAA)
+    m_timer_workaround.fieldevents_filter_active   = false;
+    m_timer_workaround.is_hfclk_on                 = false;
+    m_timer_workaround.is_delayed                  = false;
+    m_timer_workaround.is_field_validation_pending = false;
+#endif
     nrfx_nfct_hw_init_setup();
 
     NRFX_IRQ_PENDING_CLEAR(NFCT_IRQn);
@@ -500,17 +510,32 @@ void nrfx_nfct_uninit(void)
 
     NRFX_IRQ_DISABLE(NFCT_IRQn);
     NRFX_IRQ_PENDING_CLEAR(NFCT_IRQn);
+    /* Prevent a close-timer callback that was already pending from putting
+     * the peripheral back into SENSE while teardown is in progress. */
+    m_nfct_cb.state = NRFX_DRV_STATE_UNINITIALIZED;
+
+#if defined(USE_TIMER_WORKAROUND)
+    /* Stop TIMER4 before the close timer. Its validation callback can restart
+     * m_nfc_close_timer when it observes a field transition. */
+    nrfx_timer_uninit(&m_timer_workaround.timer);
+#endif // defined(USE_TIMER_WORKAROUND)
 
 #if defined(NRF52833_XXAA) || defined(NRF52840_XXAA)
     app_timer_stop(m_nfc_close_timer);
 #endif
 
-#if defined(USE_TIMER_WORKAROUND)
-    /* De-initialize Timer module as the workaround for NFCT HW issues. */
-    nrfx_timer_uninit(&m_timer_workaround.timer);
-#endif // defined(USE_TIMER_WORKAROUND)
+    m_nfct_cb.field_on = false;
+#if defined(NRF52833_XXAA) || defined(NRF52840_XXAA)
+    m_timer_workaround.fieldevents_filter_active   = false;
+    m_timer_workaround.is_hfclk_on                 = false;
+    m_timer_workaround.is_delayed                  = false;
+    m_timer_workaround.is_field_validation_pending = false;
+#endif
 
-    m_nfct_cb.state = NRFX_DRV_STATE_UNINITIALIZED;
+    /* A timer IRQ may have run between the first DISABLE and the timer stops.
+     * Make the final hardware state deterministic after both timer sources
+     * have been shut down. */
+    nrfx_nfct_disable();
 }
 
 void nrfx_nfct_enable(void)

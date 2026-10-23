@@ -423,10 +423,12 @@ uint8_t darkside_recover_key(uint8_t targetBlk, uint8_t targetTyp,
         while (NRF_LOG_PROCESS());
         // update LEDs
         led_toggle ^= 1;
-        if (led_toggle) {
-            nrf_gpio_pin_set(led_pins[nt_diff]);
-        } else {
-            nrf_gpio_pin_clear(led_pins[nt_diff]);
+        if (nt_diff < RGB_LIST_NUM) {
+            if (led_toggle) {
+                nrf_gpio_pin_set(led_pins[nt_diff]);
+            } else {
+                nrf_gpio_pin_clear(led_pins[nt_diff]);
+            }
         }
         // Reset the receiving sign of NACK
         received_nack = 0;
@@ -505,7 +507,9 @@ uint8_t darkside_recover_key(uint8_t targetBlk, uint8_t targetTyp,
 
         // Receive answer. This will be a 4 Bit NACK when the 8 parity bits are OK after decoding
         if (received_nack) {
-            nrf_gpio_pin_set(led_pins[nt_diff]);
+            if (nt_diff < RGB_LIST_NUM) {
+                nrf_gpio_pin_set(led_pins[nt_diff]);
+            }
             if (nt_diff == 0) {
                 // there is no need to check all parities for other nt_diff. Parity Bits for mf_nr_ar[0..2] won't change
                 par_low = par & 0xE0;

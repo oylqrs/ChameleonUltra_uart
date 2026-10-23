@@ -20,6 +20,7 @@
 
 #include "syssleep.h"
 #include "ble_main.h"
+#include "ble_hid_keyboard.h"
 #include "dataframe.h"
 #include "hw_connect.h"
 #include "settings.h"
@@ -99,6 +100,7 @@ static ble_uuid_t m_adv_uuids[]          =                                      
 {
     {BLE_UUID_NUS_SERVICE, NUS_SERVICE_UUID_TYPE},
     {BLE_UUID_BATTERY_SERVICE, BLE_UUID_TYPE_BLE},
+    {BLE_UUID_HUMAN_INTERFACE_DEVICE_SERVICE, BLE_UUID_TYPE_BLE},
 };
 volatile bool g_is_ble_connected = false;
 volatile bool g_is_low_battery_shutdown = false;
@@ -138,6 +140,9 @@ static void gap_params_init(void) {
     BLE_GAP_CONN_SEC_MODE_SET_OPEN(&sec_mode);
 
     err_code = sd_ble_gap_device_name_set(&sec_mode, (const uint8_t *) DEVICE_NAME_STR, strlen(DEVICE_NAME_STR));
+    APP_ERROR_CHECK(err_code);
+
+    err_code = sd_ble_gap_appearance_set(BLE_APPEARANCE_HID_KEYBOARD);
     APP_ERROR_CHECK(err_code);
 
     memset(&gap_conn_params, 0, sizeof(gap_conn_params));
@@ -184,7 +189,8 @@ static void nus_data_handler(ble_nus_evt_t *p_evt) {
     if (p_evt->type == BLE_NUS_EVT_RX_DATA) {
         NRF_LOG_DEBUG("Received data from BLE NUS.");
         NRF_LOG_HEXDUMP_DEBUG(p_evt->params.rx_data.p_data, p_evt->params.rx_data.length);
-        data_frame_receive((uint8_t *)(p_evt->params.rx_data.p_data), p_evt->params.rx_data.length);
+        data_frame_receive_from(DATA_FRAME_SOURCE_BLE, p_evt->params.rx_data.p_data,
+                                p_evt->params.rx_data.length);
     }
 }
 /**@snippet [Handling the data received over BLE] */
@@ -327,6 +333,9 @@ static void services_init(void) {
 
     err_code = ble_bas_init(&m_bas, &bas_init_obj);
     APP_ERROR_CHECK(err_code);
+
+    // HIDS is registered once. Runtime mode only gates pairing and reports.
+    ble_hid_keyboard_init();
 }
 
 /**@brief Function for handling an event from the Connection Parameters Module.
@@ -405,6 +414,8 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt) {
 static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context) {
     ret_code_t err_code;
 
+    ble_hid_keyboard_on_ble_evt(p_ble_evt);
+
     switch (p_ble_evt->header.evt_id) {
         case BLE_GAP_EVT_CONNECTED:
             sleep_timer_stop();
@@ -439,7 +450,8 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context) {
         case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
             // Pairing not supported? No, is supported now, hahahaha...
             // But... the pairing is enable?
-            if (settings_get_ble_pairing_enable_first_load()) {
+            if (settings_get_ble_pairing_enable_first_load() ||
+                    ble_hid_keyboard_pairing_allowed()) {
                 NRF_LOG_DEBUG("Pairing is enable, The BLE_GAP_EVT_SEC_PARAMS_REQUEST event is handled by the pairing manager.");
             } else {
                 err_code = sd_ble_gap_sec_params_reply(m_conn_handle, BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP, NULL, NULL);
@@ -540,7 +552,7 @@ static void advertising_init(void) {
     memset(&init, 0, sizeof(init));
 
     init.advdata.name_type          = BLE_ADVDATA_FULL_NAME;
-    init.advdata.include_appearance = false;
+    init.advdata.include_appearance = true;
     init.advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
 
     init.srdata.uuids_complete.uuid_cnt = sizeof(m_adv_uuids) / sizeof(m_adv_uuids[0]);
@@ -606,6 +618,19 @@ void advertising_start(bool erase_bonds) {
  */
 void advertising_stop(void) {
     sd_ble_gap_adv_stop(m_advertising.adv_handle);
+}
+
+void ble_main_ensure_advertising(void) {
+    if (!m_advertising.initialized ||
+            m_conn_handle != BLE_CONN_HANDLE_INVALID ||
+            m_advertising.adv_mode_current != BLE_ADV_MODE_IDLE) {
+        return;
+    }
+
+    ret_code_t ret = ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST);
+    if (ret != NRF_SUCCESS && ret != NRF_ERROR_INVALID_STATE) {
+        NRF_LOG_ERROR("Failed to start HID advertising: 0x%08x", ret);
+    }
 }
 
 /**@brief Function for handling Peer Manager events.

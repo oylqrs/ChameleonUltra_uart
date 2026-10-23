@@ -2,8 +2,11 @@
 #include "bsp_time.h"
 #include "bsp_delay.h"
 #include "usb_main.h"
+#include "urat_esp/uart_esp.h"
+#include "urat_esp/nfc_fido_bridge.h"
 #include "rfid_main.h"
 #include "ble_main.h"
+#include "ble_hid_keyboard.h"
 #include "syssleep.h"
 #include "hex_utils.h"
 #include "data_cmd.h"
@@ -11,6 +14,7 @@
 #include "app_status.h"
 #include "tag_persistence.h"
 #include "nrf_pwr_mgmt.h"
+#include "nrf_soc.h"
 #include "settings.h"
 #include "delayed_reset.h"
 #include "netdata.h"
@@ -19,6 +23,7 @@
 #include "lf_reader_generic.h"
 #include "lf_em4x05_data.h"
 #include "rc522.h"
+#include "iso14443_4_reader.h"
 #include "mf1_crapto1.h"
 #include "parity.h"
 #endif
@@ -169,6 +174,10 @@ static data_frame_tx_t *cmd_processor_get_animation_mode(uint16_t cmd, uint16_t 
 }
 
 static data_frame_tx_t *cmd_processor_get_battery_info(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    if (data_frame_get_source() == DATA_FRAME_SOURCE_UART && status == 0u) {
+        /* Keep the nRF52840 awake while the ESP32-P4 continues polling battery state. */
+        sleep_timer_start(SLEEP_DELAY_MS_ESP_BATTERY_IDLE);
+    }
     struct {
         uint16_t voltage;
         uint8_t percent;
@@ -176,6 +185,17 @@ static data_frame_tx_t *cmd_processor_get_battery_info(uint16_t cmd, uint16_t st
     payload.voltage = U16HTONS(batt_lvl_in_milli_volts);
     payload.percent = percentage_batt_lvl;
     return data_frame_make(cmd, STATUS_SUCCESS, sizeof(payload), (uint8_t *)&payload);
+}
+
+static data_frame_tx_t *cmd_processor_get_device_chip_temperature(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    int32_t temperature;
+    ret_code_t err_code = sd_temp_get(&temperature);
+    if (err_code != NRF_SUCCESS) {
+        return data_frame_make(cmd, STATUS_CMD_ERR, 0, NULL);
+    }
+
+    int16_t quarter_degrees = (int16_t)U16HTONS((uint16_t)temperature);
+    return data_frame_make(cmd, STATUS_SUCCESS, sizeof(quarter_degrees), (uint8_t *)&quarter_degrees);
 }
 
 static data_frame_tx_t *cmd_processor_get_button_press_config(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
@@ -229,7 +249,7 @@ static data_frame_tx_t *cmd_processor_get_ble_pairing_enable(uint16_t cmd, uint1
 }
 
 static data_frame_tx_t *cmd_processor_set_ble_pairing_enable(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
-    if (length != 1 && data[0] > 1) {
+    if (length != 1 || data[0] > 1) {
         return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
     }
     settings_set_ble_pairing_enable(data[0]);
@@ -2434,14 +2454,12 @@ static data_frame_tx_t *cmd_processor_hf14a_scan_keep(uint16_t cmd, uint16_t sta
  * returns: raw APDU response bytes (PCB stripped)
  */
 static data_frame_tx_t *cmd_processor_hf14a_4_reader_apdu(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
-    if (length == 0 || length > 61) {
+    if (length == 0 || length > ISO14443_4_READER_MAX_APDU_LENGTH) {
         return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
     }
 
-    uint8_t resp_buf[64];    /* RC522 FIFO per chain block */
     uint8_t resp_chain[512]; /* reassembled chained response */
     uint16_t resp_chain_len = 0;
-    uint16_t resp_bits = 0;
 
     /* Step 1: cycle field briefly to return card to IDLE state, then
      * do full select + RATS via scan_auto. This is needed because the card
@@ -2464,75 +2482,19 @@ static data_frame_tx_t *cmd_processor_hf14a_4_reader_apdu(uint16_t cmd, uint16_t
     NRF_LOG_INFO("14A4_READER_APDU: scan_auto OK sak=%02x ats_len=%d",
                  taginfo.sak, taginfo.ats_len);
 
-    /* Step 3: wrap APDU in I-block (PCB=0x02) and send */
-    uint8_t frame_buf[64];
-    frame_buf[0] = 0x02;  /* PCB: I-block, block_num=0, no CID, no NAD */
-    memcpy(&frame_buf[1], data, length);
-    crc_14a_append(frame_buf, length + 1);
-    uint8_t frame_len = length + 1 + 2;
-
-    NRF_LOG_INFO("14A4_READER_APDU: sending I-block, frame_len=%d", frame_len);
-
-    pcd_14a_reader_timeout_set(600);
-    resp_bits = 0;
-    status = pcd_14a_reader_bytes_transfer(PCD_TRANSCEIVE,
-                                           frame_buf, frame_len, resp_buf, &resp_bits, U8ARR_BIT_LEN(resp_buf));
+    uint8_t block_number = 0;
+    iso14443_4_reader_result_t result = iso14443_4_reader_exchange(
+        data, length, resp_chain, sizeof(resp_chain), &resp_chain_len,
+        &block_number);
     pcd_14a_reader_timeout_set(DEF_COM_TIMEOUT);
-
-    NRF_LOG_INFO("14A4_READER_APDU: APDU transfer status=%d resp_bits=%d", status, resp_bits);
-
-    if (status != STATUS_HF_TAG_OK || resp_bits < 8) {
-        uint8_t dbg[6] = {0x03, status, (uint8_t)frame_len,
-                          frame_buf[0], frame_buf[1], frame_buf[2]
-                         };
-        return data_frame_make(cmd, STATUS_HF_TAG_NO, 6, dbg);
-    }
-
-    uint8_t resp_bytes = resp_bits / 8;
-    if (resp_bytes < 3) {
-        uint8_t dbg[2] = {0x04, resp_bytes};
-        return data_frame_make(cmd, STATUS_HF_ERR_CRC, 2, dbg);
-    }
-
-    /* Verify first block CRC and begin chaining reassembly */
-    uint8_t crc_calc[2];
-    crc_14a_calculate(resp_buf, resp_bytes - 2, crc_calc);
-    if (resp_buf[resp_bytes - 2] != crc_calc[0] || resp_buf[resp_bytes - 1] != crc_calc[1]) {
-        return data_frame_make(cmd, STATUS_HF_ERR_CRC, resp_bytes, resp_buf);
-    }
-
-    /* Copy data portion (strip PCB + CRC), then handle chaining */
-    uint8_t blk_num = 0;
-    uint8_t resp_pcb = resp_buf[0];
-    uint8_t dlen = resp_bytes - 3; /* subtract PCB(1) + CRC(2) */
-    if (dlen > 0 && resp_chain_len + dlen < sizeof(resp_chain)) {
-        memcpy(&resp_chain[resp_chain_len], &resp_buf[1], dlen);
-        resp_chain_len += dlen;
-    }
-    blk_num ^= 1;
-
-    /* ISO14443-4 chaining: PCB bit5 (0x20) set means more blocks follow */
-    while (resp_pcb & 0x20) {
-        uint8_t rack = 0xA2 | (resp_pcb & 0x01); /* R(ACK) block_num matches received I-block */
-        uint8_t rack_frame[3];
-        rack_frame[0] = rack;
-        crc_14a_append(rack_frame, 1);
-        resp_bits = 0;
-        pcd_14a_reader_timeout_set(600);
-        status = pcd_14a_reader_bytes_transfer(PCD_TRANSCEIVE,
-                                               rack_frame, 3, resp_buf, &resp_bits, U8ARR_BIT_LEN(resp_buf));
-        pcd_14a_reader_timeout_set(DEF_COM_TIMEOUT);
-        if (status != STATUS_HF_TAG_OK || resp_bits < 24) break;
-        resp_bytes = resp_bits / 8;
-        crc_14a_calculate(resp_buf, resp_bytes - 2, crc_calc);
-        if (resp_buf[resp_bytes - 2] != crc_calc[0] || resp_buf[resp_bytes - 1] != crc_calc[1]) break;
-        resp_pcb = resp_buf[0];
-        dlen = resp_bytes - 3;
-        if (dlen > 0 && resp_chain_len + dlen < sizeof(resp_chain)) {
-            memcpy(&resp_chain[resp_chain_len], &resp_buf[1], dlen);
-            resp_chain_len += dlen;
+    if (result != ISO14443_4_READER_OK) {
+        uint16_t error_status = STATUS_HF_ERR_STAT;
+        if (result == ISO14443_4_READER_CRC_ERROR) {
+            error_status = STATUS_HF_ERR_CRC;
+        } else if (result == ISO14443_4_READER_IO_ERROR) {
+            error_status = STATUS_HF_TAG_NO;
         }
-        blk_num ^= 1;
+        return data_frame_make(cmd, error_status, 0, NULL);
     }
 
     return data_frame_make(cmd, STATUS_HF_TAG_OK, resp_chain_len, resp_chain);
@@ -2545,102 +2507,16 @@ static data_frame_tx_t *cmd_processor_hf14a_4_reader_apdu(uint16_t cmd, uint16_t
 static bool tcl_apdu_(
     const uint8_t *apdu, uint8_t apdu_sz,
     uint8_t **rdata_ptr, uint16_t *rlen_ptr,
-    uint8_t *abuf, uint8_t *rbuf, uint8_t *chain_buf,
-    uint16_t *rbits_p, uint8_t *blk_p) {
-    /* Build I-block: PCB + APDU + CRC */
-    abuf[0] = 0x02 | (*blk_p & 0x01);
-    memcpy(&abuf[1], apdu, apdu_sz);
-    crc_14a_append(abuf, apdu_sz + 1);
-    uint8_t frame_len = apdu_sz + 3;   /* PCB + APDU + CRC */
-
-    /* Clear stale RxIRq before transmit.
-     * bytes_transfer only clears ComIrqReg bit7 (Set1).
-     * RxIRq (bit4) stays set from the previous receive and causes the
-     * wait-loop to exit instantly, returning garbage from FIFO. */
-    write_register_single(ComIrqReg, 0x7F);
-    pcd_14a_reader_timeout_set(600);
-    uint16_t rbits = 0;
-    uint8_t st = pcd_14a_reader_bytes_transfer(
-                     PCD_TRANSCEIVE, abuf, frame_len, rbuf, &rbits, 270u * 8u);
-    if (st != STATUS_HF_TAG_OK || rbits < 24u) return false;
-
-    uint16_t rb = rbits / 8u;
-    uint8_t crc[2];
-    crc_14a_calculate(rbuf, rb - 2u, crc);
-    if (rbuf[rb - 2] != crc[0] || rbuf[rb - 1] != crc[1]) return false;
-
-    *blk_p ^= 1;
-    uint8_t  resp_pcb  = rbuf[0];
-    uint16_t chain_len = 0;
-    uint8_t  dlen      = (uint8_t)(rb - 3u);
-    if (dlen > 0 && dlen < 512u) {
-        memcpy(chain_buf, &rbuf[1], dlen);
-        chain_len = dlen;
-    }
-
-    /* Handle card-side chaining ---------------------------------------- */
-    uint16_t chain_rbits = 0;   /* hoisted: used in both WTX and R(ACK) paths */
-    uint8_t  chain_st    = STATUS_HF_TAG_OK;
-    while (resp_pcb & 0x20u) {
-        if ((resp_pcb & 0xC0u) != 0x00u) {
-            /* S-block: handle S(WTX), reject others.
-             * Some Visa/MC cards send WTX (PCB=0xF2) before their FCI,
-             * requesting more processing time. We must echo it back.
-             * The WTXM byte was spuriously added to chain_buf — undo it. */
-            if ((resp_pcb & 0xF0u) == 0xF0u) {
-                chain_len -= dlen;       /* remove spurious WTXM byte(s) */
-                uint8_t wtx_r[4];
-                wtx_r[0] = resp_pcb;    /* mirror the S(WTX) PCB */
-                wtx_r[1] = rbuf[1];     /* WTXM from last received frame */
-                crc_14a_append(wtx_r, 2);
-                write_register_single(ComIrqReg, 0x7F);
-                pcd_14a_reader_timeout_set(600);
-                chain_rbits = 0;
-                chain_st = pcd_14a_reader_bytes_transfer(
-                               PCD_TRANSCEIVE, wtx_r, 4, rbuf, &chain_rbits, 270u * 8u);
-                if (chain_st != STATUS_HF_TAG_OK || chain_rbits < 24u) break;
-                rb = chain_rbits / 8u;
-                crc_14a_calculate(rbuf, rb - 2u, crc);
-                if (rbuf[rb - 2] != crc[0] || rbuf[rb - 1] != crc[1]) break;
-                resp_pcb = rbuf[0];
-                dlen = (uint8_t)(rb - 3u);
-                if (dlen > 0u && chain_len + dlen < 512u) {
-                    memcpy(&chain_buf[chain_len], &rbuf[1], dlen);
-                    chain_len += dlen;
-                }
-                continue; /* re-check while with new resp_pcb */
-            }
-            break; /* other S-blocks (DESELECT etc.): stop */
-        }
-
-        /* R(ACK) block_num must match the received I-block's block_num */
-        uint8_t rf[3];
-        rf[0] = 0xA2u | (resp_pcb & 0x01u);
-        crc_14a_append(rf, 1);
-
-        /* Use bytes_transfer for chain R(ACK) — clear stale RxIRq first */
-        write_register_single(ComIrqReg, 0x7F);
-        pcd_14a_reader_timeout_set(600);
-        chain_rbits = 0;
-        chain_st = pcd_14a_reader_bytes_transfer(
-                       PCD_TRANSCEIVE, rf, 3, rbuf, &chain_rbits, 270u * 8u);
-        if (chain_st != STATUS_HF_TAG_OK || chain_rbits < 24u) break;
-        rb = chain_rbits / 8u;   /* bytes_transfer returns BIT count */
-
-        crc_14a_calculate(rbuf, rb - 2u, crc);
-        if (rbuf[rb - 2] != crc[0] || rbuf[rb - 1] != crc[1]) break;
-
-        resp_pcb = rbuf[0];
-        dlen = (uint8_t)(rb - 3u);
-        if (dlen > 0u && chain_len + dlen < 512u) {
-            memcpy(&chain_buf[chain_len], &rbuf[1], dlen);
-            chain_len += dlen;
-        }
+    uint8_t *chain_buf, uint8_t *blk_p) {
+    *rlen_ptr = 0;
+    iso14443_4_reader_result_t result = iso14443_4_reader_exchange(
+        apdu, apdu_sz, chain_buf, 512U, rlen_ptr, blk_p);
+    if (result != ISO14443_4_READER_OK) {
+        return false;
     }
 
     *rdata_ptr = chain_buf;
-    *rlen_ptr  = chain_len;
-    return chain_len > 0u;
+    return true;
 }
 
 /**
@@ -2664,14 +2540,11 @@ static data_frame_tx_t *cmd_processor_hf14a_4_emv_scan(uint16_t cmd, uint16_t st
     uint16_t out_len = 0;
 
     /* ---- helpers -------------------------------------------------- */
-    static uint8_t  abuf[64];   /* TX frame: PCB + APDU + CRC */
-    static uint8_t  rbuf[270];  /* single-frame receive buffer: up to 256 bytes data + PCB + CRC + slack (FSDI=8 → FSD=256) */
     static uint8_t  chain_buf[512]; /* reassembled chained response */
-    uint16_t rbits;
     uint8_t  blk = 0;  /* alternating block number */
 
     /* SEND_APDU: thin wrapper that calls the static tcl_apdu_ helper. */
-#define SEND_APDU(ap, asz, rd, rl)         tcl_apdu_((ap),(asz),(rd),(rl),abuf,rbuf,chain_buf,&rbits,&blk)
+#define SEND_APDU(ap, asz, rd, rl)         tcl_apdu_((ap),(asz),(rd),(rl),chain_buf,&blk)
 
 
 
@@ -2970,7 +2843,152 @@ static data_frame_tx_t *cmd_processor_hf14a_4_debug_counters(uint16_t cmd, uint1
     return data_frame_make(cmd, STATUS_SUCCESS, 4, buf);
 }
 #endif
+
+typedef nfc_fido_bridge_result_t (*nfc_fido_bridge_command_t)(
+    const uint8_t *request,
+    uint16_t request_length,
+    uint8_t *response,
+    uint16_t *response_length);
+
+static data_frame_tx_t *process_nfc_fido_bridge_command(
+    uint16_t cmd,
+    uint16_t status,
+    uint16_t length,
+    uint8_t *data,
+    nfc_fido_bridge_command_t command) {
+    uint8_t payload[NFC_FIDO_BRIDGE_EVENT_HEADER_SIZE + NFC_FIDO_BRIDGE_MAX_CAPDU];
+    uint16_t payload_length = 0u;
+
+    if (data_frame_get_source() != DATA_FRAME_SOURCE_UART || status != 0u) {
+        return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    }
+
+    nfc_fido_bridge_result_t result = command(data, length, payload, &payload_length);
+    switch (result) {
+        case NFC_FIDO_BRIDGE_OK:
+            return data_frame_make(cmd, STATUS_SUCCESS, payload_length,
+                                   payload_length == 0u ? NULL : payload);
+        case NFC_FIDO_BRIDGE_INVALID_ARGUMENT:
+            return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+        case NFC_FIDO_BRIDGE_UNSUPPORTED:
+            return data_frame_make(cmd, STATUS_NOT_IMPLEMENTED, 0, NULL);
+        case NFC_FIDO_BRIDGE_INVALID_STATE:
+        default:
+            return data_frame_make(cmd, STATUS_CMD_ERR, 0, NULL);
+    }
+}
+
+static data_frame_tx_t *cmd_processor_nfc_fido_configure(
+    uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    return process_nfc_fido_bridge_command(cmd, status, length, data,
+                                           nfc_fido_bridge_configure);
+}
+
+static data_frame_tx_t *cmd_processor_nfc_fido_poll(
+    uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    return process_nfc_fido_bridge_command(cmd, status, length, data,
+                                           nfc_fido_bridge_poll);
+}
+
+static data_frame_tx_t *cmd_processor_nfc_fido_response(
+    uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    return process_nfc_fido_bridge_command(cmd, status, length, data,
+                                           nfc_fido_bridge_response);
+}
+
+static data_frame_tx_t *cmd_processor_nfc_fido_reset(
+    uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    return process_nfc_fido_bridge_command(cmd, status, length, data,
+                                           nfc_fido_bridge_reset);
+}
+
+static uint16_t ble_hid_result_status(ble_hid_keyboard_result_t result) {
+    switch (result) {
+        case BLE_HID_KEYBOARD_OK:
+            return STATUS_SUCCESS;
+        case BLE_HID_KEYBOARD_INVALID_ARGUMENT:
+            return STATUS_PAR_ERR;
+        case BLE_HID_KEYBOARD_INVALID_STATE:
+            return STATUS_DEVICE_MODE_ERROR;
+        case BLE_HID_KEYBOARD_BUSY:
+        case BLE_HID_KEYBOARD_INTERNAL_ERROR:
+        default:
+            return STATUS_CMD_ERR;
+    }
+}
+
+static bool ble_hid_command_allowed(uint16_t status) {
+    return data_frame_get_source() == DATA_FRAME_SOURCE_UART && status == 0u;
+}
+
+static data_frame_tx_t *cmd_processor_ble_hid_configure(
+    uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    if (!ble_hid_command_allowed(status) || length != 3u ||
+            data[0] != BLE_HID_KEYBOARD_PROTOCOL_VERSION ||
+            data[1] > 1u || data[2] > 1u || (data[2] != 0u && data[1] == 0u)) {
+        return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    }
+
+    ble_hid_keyboard_result_t result =
+        ble_hid_keyboard_configure(data[1] != 0u, data[2] != 0u);
+    if (result != BLE_HID_KEYBOARD_OK) {
+        return data_frame_make(cmd, ble_hid_result_status(result), 0, NULL);
+    }
+    if (data[1] != 0u) {
+        ble_main_ensure_advertising();
+    }
+
+    uint8_t response[BLE_HID_KEYBOARD_STATUS_SIZE];
+    ble_hid_keyboard_get_status(response);
+    return data_frame_make(cmd, STATUS_SUCCESS, sizeof(response), response);
+}
+
+static data_frame_tx_t *cmd_processor_ble_hid_send_report(
+    uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    if (!ble_hid_command_allowed(status) || length != 10u ||
+            data[0] != BLE_HID_KEYBOARD_PROTOCOL_VERSION) {
+        return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    }
+
+    ble_hid_keyboard_result_t result = ble_hid_keyboard_send_report(&data[2]);
+    uint16_t result_status = ble_hid_result_status(result);
+    if (result_status != STATUS_SUCCESS) {
+        return data_frame_make(cmd, result_status, 0, NULL);
+    }
+    uint8_t response[2] = {BLE_HID_KEYBOARD_PROTOCOL_VERSION, data[1]};
+    return data_frame_make(cmd, STATUS_SUCCESS, sizeof(response), response);
+}
+
+static data_frame_tx_t *cmd_processor_ble_hid_release_all(
+    uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    if (!ble_hid_command_allowed(status) || length != 1u ||
+            data[0] != BLE_HID_KEYBOARD_PROTOCOL_VERSION) {
+        return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    }
+    ble_hid_keyboard_result_t result = ble_hid_keyboard_release_all();
+    return data_frame_make(cmd, ble_hid_result_status(result), 0, NULL);
+}
+
+static data_frame_tx_t *cmd_processor_ble_hid_get_status(
+    uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    if (!ble_hid_command_allowed(status) || length != 1u ||
+            data[0] != BLE_HID_KEYBOARD_PROTOCOL_VERSION) {
+        return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    }
+    uint8_t response[BLE_HID_KEYBOARD_STATUS_SIZE];
+    ble_hid_keyboard_get_status(response);
+    return data_frame_make(cmd, STATUS_SUCCESS, sizeof(response), response);
+}
+
 static cmd_data_map_t m_data_cmd_map[] = {
+    {    DATA_CMD_NFC_FIDO_CONFIGURE,            NULL,                        cmd_processor_nfc_fido_configure,            NULL                   },
+    {    DATA_CMD_NFC_FIDO_POLL,                 NULL,                        cmd_processor_nfc_fido_poll,                 NULL                   },
+    {    DATA_CMD_NFC_FIDO_RESPONSE,             NULL,                        cmd_processor_nfc_fido_response,             NULL                   },
+    {    DATA_CMD_NFC_FIDO_RESET,                NULL,                        cmd_processor_nfc_fido_reset,                NULL                   },
+    {    DATA_CMD_BLE_HID_CONFIGURE,             NULL,                        cmd_processor_ble_hid_configure,             NULL                   },
+    {    DATA_CMD_BLE_HID_SEND_REPORT,           NULL,                        cmd_processor_ble_hid_send_report,           NULL                   },
+    {    DATA_CMD_BLE_HID_RELEASE_ALL,           NULL,                        cmd_processor_ble_hid_release_all,           NULL                   },
+    {    DATA_CMD_BLE_HID_GET_STATUS,            NULL,                        cmd_processor_ble_hid_get_status,            NULL                   },
     {    DATA_CMD_GET_APP_VERSION,              NULL,                        cmd_processor_get_app_version,               NULL                   },
     {    DATA_CMD_CHANGE_DEVICE_MODE,           NULL,                        cmd_processor_change_device_mode,            NULL                   },
     {    DATA_CMD_GET_DEVICE_MODE,              NULL,                        cmd_processor_get_device_mode,               NULL                   },
@@ -3010,6 +3028,7 @@ static cmd_data_map_t m_data_cmd_map[] = {
     {    DATA_CMD_SET_BLE_PAIRING_ENABLE,       NULL,                        cmd_processor_set_ble_pairing_enable,        NULL                   },
     {    DATA_CMD_GET_SLEEP_TIMEOUT,            NULL,                        cmd_processor_get_sleep_timeout,             NULL                   },
     {    DATA_CMD_SET_SLEEP_TIMEOUT,            NULL,                        cmd_processor_set_sleep_timeout,             NULL                   },
+    {    DATA_CMD_GET_DEVICE_CHIP_TEMPERATURE,  NULL,                        cmd_processor_get_device_chip_temperature,   NULL                   },
     {    DATA_CMD_GET_ALL_SLOT_NICKS,           NULL,                        cmd_processor_get_all_slot_nicks,            NULL                   },
 
 #if defined(PROJECT_CHAMELEON_ULTRA)
@@ -3153,21 +3172,47 @@ data_frame_tx_t *cmd_processor_get_device_capabilities(uint16_t cmd, uint16_t st
  * @param resp data
  */
 static void auto_response_data(data_frame_tx_t *resp) {
-    // TODO Please select the reply source automatically according to the message source,
-    //  and do not reply by checking the validity of the link layer by layer
-    if (is_usb_working()) {
+    data_frame_source_t source = data_frame_get_source();
+    if (source == DATA_FRAME_SOURCE_USB && is_usb_working()) {
         usb_cdc_write(resp->buffer, resp->length);
-    } else if (is_nus_working()) {
+    } else if (source == DATA_FRAME_SOURCE_BLE && is_nus_working()) {
         nus_data_response(resp->buffer, resp->length);
+    } else if (source == DATA_FRAME_SOURCE_UART && uart_esp_is_working()) {
+        uart_esp_write_result_t result = uart_esp_write(resp->buffer, resp->length);
+        if (result != UART_ESP_WRITE_OK) {
+            NRF_LOG_ERROR("UART response failed: %d", result);
+        }
     } else {
         NRF_LOG_ERROR("No connection valid found at response client.");
     }
 }
 
 
+static bool command_requires_normal_rf(uint16_t cmd) {
+    if (cmd >= 2000u && cmd < 7000u) return true;
+
+    switch (cmd) {
+        case DATA_CMD_CHANGE_DEVICE_MODE:
+        case DATA_CMD_SET_ACTIVE_SLOT:
+        case DATA_CMD_SET_SLOT_TAG_TYPE:
+        case DATA_CMD_SET_SLOT_DATA_DEFAULT:
+        case DATA_CMD_SET_SLOT_ENABLE:
+        case DATA_CMD_SLOT_DATA_CONFIG_SAVE:
+        case DATA_CMD_DELETE_SLOT_SENSE_TYPE:
+        case DATA_CMD_WIPE_FDS:
+            return true;
+        default:
+            return false;
+    }
+}
+
 /**@brief Function to process data frame(cmd)
  */
 void on_data_frame_received(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    if (nfc_fido_bridge_is_active() && command_requires_normal_rf(cmd)) {
+        auto_response_data(data_frame_make(cmd, STATUS_DEVICE_MODE_ERROR, 0, NULL));
+        return;
+    }
     data_frame_tx_t *response = NULL;
     bool is_cmd_support = false;
     for (int i = 0; i < ARRAY_SIZE(m_data_cmd_map); i++) {

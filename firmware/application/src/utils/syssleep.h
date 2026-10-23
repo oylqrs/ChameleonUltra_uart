@@ -15,6 +15,7 @@
 #define SLEEP_DELAY_MS_BLE_DISCONNECTED         4000    // BLE's sleep delay after disconnection
 #define SLEEP_DELAY_MS_USB_POWER_DISCONNECTED   3000    // The sleep delay after the USB power supply is broken
 #define SLEEP_NO_BATTERY_SHUTDOWN               1       // Turn off at a low volume
+#define SLEEP_DELAY_MS_ESP_BATTERY_IDLE        30000   // ESP32-P4 battery polling inactivity timeout
 
 
 void sleep_timer_init(void);

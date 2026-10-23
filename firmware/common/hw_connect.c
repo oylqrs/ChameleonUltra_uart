@@ -118,8 +118,8 @@ void hw_connect_init(void) {
         LED_R           = (NRF_GPIO_PIN_MAP(0, 24));
         LED_G           = (NRF_GPIO_PIN_MAP(0, 22));
         LED_B           = (NRF_GPIO_PIN_MAP(1, 0));
-        RGB_LIST_NUM    = 8;
-        RGB_CTRL_NUM    = 3;
+        RGB_LIST_NUM    = 0;
+        RGB_CTRL_NUM    = 0;
 
         LF_MOD          = (NRF_GPIO_PIN_MAP(1, 13));
         LF_RSSI_PIN     = (NRF_GPIO_PIN_MAP(0, 2));
@@ -159,8 +159,8 @@ void hw_connect_init(void) {
         LED_R           = (NRF_GPIO_PIN_MAP(0, 8));
         LED_G           = (NRF_GPIO_PIN_MAP(0, 12));
         LED_B           = (NRF_GPIO_PIN_MAP(1, 9));
-        RGB_LIST_NUM    = 8;
-        RGB_CTRL_NUM    = 3;
+        RGB_LIST_NUM    = 0;
+        RGB_CTRL_NUM    = 0;
 
         LF_MOD          = (NRF_GPIO_PIN_MAP(1, 4));
         LF_RSSI_PIN     = (NRF_GPIO_PIN_MAP(0, 2));
@@ -212,26 +212,8 @@ uint8_t hw_get_version_code(void) {
     return m_hw_ver;
 }
 
-// Initialize the LED light beads of the device
+// LED control is disabled; retain the API for existing callers.
 void init_leds(void) {
-    uint32_t *led_pins = hw_get_led_array();
-    uint32_t *led_rgb_pins = hw_get_rgb_array();
-
-    // Initialize the GPIO of the LED lights in the card slot (other LEDs are controlled by other modules)
-    for (uint8_t i = 0; i < RGB_LIST_NUM; i++) {
-        nrf_gpio_cfg_output(led_pins[i]);
-        nrf_gpio_pin_clear(led_pins[i]);
-    }
-
-    // Initialize RGB pin
-    for (uint8_t i = 0; i < RGB_CTRL_NUM; i++) {
-        nrf_gpio_cfg_output(led_rgb_pins[i]);
-        nrf_gpio_pin_set(led_rgb_pins[i]);
-    }
-
-    // set FIELD The LED pin is output and the field light is turned off
-    nrf_gpio_cfg_output(LED_FIELD);
-    TAG_FIELD_LED_OFF()
 }
 
 /**
@@ -239,35 +221,5 @@ void init_leds(void) {
  * @param color: 0 means r, 1 means g, 2 means b
  */
 void set_slot_light_color(chameleon_rgb_type_t color) {
-    nrf_gpio_pin_set(LED_R);
-    nrf_gpio_pin_set(LED_G);
-    nrf_gpio_pin_set(LED_B);
-    switch (color) {
-        case RGB_RED:
-            nrf_gpio_pin_clear(LED_R);
-            break;
-        case RGB_GREEN:
-            nrf_gpio_pin_clear(LED_G);
-            break;
-        case RGB_BLUE:
-            nrf_gpio_pin_clear(LED_B);
-            break;
-        case RGB_MAGENTA:
-            nrf_gpio_pin_clear(LED_B);
-            nrf_gpio_pin_clear(LED_R);
-            break;
-        case RGB_YELLOW:
-            nrf_gpio_pin_clear(LED_R);
-            nrf_gpio_pin_clear(LED_G);
-            break;
-        case RGB_CYAN:
-            nrf_gpio_pin_clear(LED_G);
-            nrf_gpio_pin_clear(LED_B);
-            break;
-        case RGB_WHITE:
-            nrf_gpio_pin_clear(LED_R);
-            nrf_gpio_pin_clear(LED_G);
-            nrf_gpio_pin_clear(LED_B);
-            break;
-    }
+    (void)color;
 }

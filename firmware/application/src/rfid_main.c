@@ -6,7 +6,7 @@
 device_mode_t rfid_state = DEVICE_MODE_NONE;
 
 // External declaration for field state
-extern bool m_is_field_on;
+extern volatile bool m_is_field_on;
 
 /**
  * @brief Function for enter tag reader mode
@@ -38,7 +38,7 @@ void reader_mode_enter(void) {
  * @brief Function for enter tag emulation mode
  */
 void tag_mode_enter(void) {
-    if (rfid_state != DEVICE_MODE_TAG) {
+    if (rfid_state != DEVICE_MODE_TAG || m_is_field_on) {
         rfid_state = DEVICE_MODE_TAG;
 
 #if defined(PROJECT_CHAMELEON_ULTRA)
@@ -70,6 +70,12 @@ void tag_mode_enter(void) {
         // to run tag emulation
         tag_emulation_sense_run();
     }
+}
+
+void device_mode_exit(void) {
+    tag_mode_enter();
+    tag_emulation_sense_end();
+    rfid_state = DEVICE_MODE_NONE;
 }
 
 /**

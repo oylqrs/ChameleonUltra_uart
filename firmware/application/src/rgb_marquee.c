@@ -39,10 +39,12 @@ extern bool g_usb_led_marquee_enable;
 
 
 void rgb_marquee_init(void) {
+    return;
     timer = bsp_obtain_timer(0);
 }
 
 void rgb_marquee_stop(void) {
+    return;
     nrfx_pwm_stop(&pwm0_ins, true);
     nrfx_pwm_uninit(&pwm0_ins);//turn off pwm output
     rgb_marquee_usb_idle_step = 0;
@@ -51,6 +53,7 @@ void rgb_marquee_stop(void) {
 
 // reset RGB state machines to force a refresh of the LED color
 void rgb_marquee_reset(void) {
+    return;
     rgb_marquee_usb_idle_step = 0;
     rgb_marquee_usb_open_step = 0;
 }
@@ -63,6 +66,9 @@ uint16_t get_pwmduty(uint8_t light_level) {
 // 4 Lights and the level of brightness levels (no return)
 //COLOR 0-R,1-G,2-B
 void rgb_marquee_usb_open_sweep(uint8_t color, uint8_t dir) {
+    (void)color;
+    (void)dir;
+    return;
     static uint8_t startled = 0;
     static uint8_t setled = 0;
     uint32_t *led_pins_arr;
@@ -120,6 +126,8 @@ void rgb_marquee_usb_open_sweep(uint8_t color, uint8_t dir) {
 }
 
 void rgb_marquee_usb_open_symmetric(uint8_t color) {
+    (void)color;
+    return;
     static uint8_t startled = 0;
     static uint8_t setled = 0;
     uint32_t *led_pins_arr = hw_get_led_array();
@@ -172,6 +180,10 @@ void rgb_marquee_usb_open_symmetric(uint8_t color) {
 //dir 0-from 1 card slot to 8 card slot, 1-from 8 card slot to 1 card slot (Direction, the end point is determined by the END parameter)
 //end To scan the number of lamps, decide the final animation area with the direction
 void rgb_marquee_sweep_to(uint8_t color, uint8_t dir, uint8_t end) {
+    (void)color;
+    (void)dir;
+    (void)end;
+    return;
     uint8_t startled = 0;
     uint8_t setled = 0;
     uint8_t leds2turnon = 0;
@@ -258,6 +270,11 @@ static void rgb_marquee_slot_switch_pwm_callback(nrfx_pwm_evt_type_t event_type)
     }
 }
 void rgb_marquee_slot_switch(uint8_t led_down, uint8_t color_led_down, uint8_t led_up, uint8_t color_led_up) {
+    (void)led_down;
+    (void)color_led_down;
+    (void)led_up;
+    (void)color_led_up;
+    return;
     int16_t light_level = 99; //ledBrightnessValue
     uint32_t *led_pins = hw_get_led_array();
     if (led_down >= 0 && led_down <= 7) {
@@ -325,6 +342,12 @@ void rgb_marquee_slot_switch(uint8_t led_down, uint8_t color_led_down, uint8_t l
 //end To scan the number of lamps, decide the final animation area with the direction
 //start_light stop_light 0-99 Indicate gradient brightness
 void rgb_marquee_sweep_fade(uint8_t color, uint8_t dir, uint8_t end, uint8_t start_light, uint8_t stop_light) {
+    (void)color;
+    (void)dir;
+    (void)end;
+    (void)start_light;
+    (void)stop_light;
+    return;
     uint8_t startled = 0;
     uint8_t setled = 0;
     uint8_t leds2turnon = 0;
@@ -399,6 +422,10 @@ void rgb_marquee_sweep_fade(uint8_t color, uint8_t dir, uint8_t end, uint8_t sta
 //start Start the lamp position
 //stop Stop lamp position
 void rgb_marquee_sweep_from_to(uint8_t color, uint8_t start, uint8_t stop) {
+    (void)color;
+    (void)start;
+    (void)stop;
+    return;
     int8_t setled = start;
     uint32_t *led_pins = hw_get_led_array();
     //Set the brightness
@@ -433,6 +460,7 @@ void rgb_marquee_usb_idle_pwm_callback(nrfx_pwm_evt_type_t event_type) {
     }
 }
 void rgb_marquee_usb_idle(void) {
+    return;
     uint32_t *led_array = hw_get_led_array();
     const uint16_t delay_time = 25;
     static int16_t light_level = 99; //LED brightness value
@@ -539,6 +567,9 @@ void rgb_marquee_usb_idle(void) {
 }
 
 void rgb_marquee_symmetric_out(uint8_t color, uint8_t slot) {
+    (void)color;
+    (void)slot;
+    return;
     uint32_t *led_pins = hw_get_led_array();
 
     //Adjust the color
@@ -599,6 +630,9 @@ void rgb_marquee_symmetric_out(uint8_t color, uint8_t slot) {
 }
 
 void rgb_marquee_symmetric_in(uint8_t color, uint8_t slot) {
+    (void)color;
+    (void)slot;
+    return;
     uint32_t *led_pins = hw_get_led_array();
 
     //Adjust the color
@@ -665,5 +699,6 @@ void rgb_marquee_symmetric_in(uint8_t color, uint8_t slot) {
  * @return false The state is prohibited, in the state of ordinary card slot indicator
  */
 bool rgb_marquee_is_enabled(void) {
+    return false;
     return g_usb_led_marquee_enable;
 }
