@@ -13,12 +13,10 @@ softdevice_id=0x0100
 application_version=1
 bootloader_version=1
 
-device_type=${CURRENT_DEVICE_TYPE:-ultra}
-case $device_type in
-  "ultra") hw_version=0 ;;
-  "lite")  hw_version=1 ;;
-  *)       echo "Unknown CURRENT_DEVICE_TYPE $CURRENT_DEVICE_TYPE, aborting."; exit 1 ;;
-esac
+# Keep the application, bootloader, DFU metadata, and output names on Ultra.
+export CURRENT_DEVICE_TYPE=ultra
+device_type=$CURRENT_DEVICE_TYPE
+hw_version=0
 
 echo "Building firmware for $device_type (hw_version=$hw_version)"
 

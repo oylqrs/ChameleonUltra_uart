@@ -21,9 +21,8 @@ LD_DIR           := $(SRC_COMMON)
 # Device type supported
 CHAMELEON_ULTRA := ultra
 CHAMELEON_LITE  := lite
-# What device is it?
-
-CURRENT_DEVICE_TYPE ?= ${CHAMELEON_ULTRA}
+# This firmware target is Ultra-only; ignore environment and command-line overrides.
+override CURRENT_DEVICE_TYPE := ultra
 
 # Versioning information
 GIT_VERSION := $(shell git describe --abbrev=7 --dirty --always --tags --match "v*.*")
