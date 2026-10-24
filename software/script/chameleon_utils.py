@@ -9,9 +9,41 @@ import colorama
 from functools import wraps
 # once Python3.10 is mainstream, we can replace Union[str, None] by str | None
 from typing import Union, Callable, Any
-from prompt_toolkit.completion import Completer, NestedCompleter, WordCompleter
-from prompt_toolkit.completion.base import Completion
-from prompt_toolkit.document import Document
+
+try:
+    from prompt_toolkit.completion import Completer, NestedCompleter, WordCompleter
+    from prompt_toolkit.completion.base import Completion
+    from prompt_toolkit.document import Document
+except ModuleNotFoundError:  # pragma: no cover - optional dependency for interactive shell
+    class Completer:
+        def get_completions(self, document, complete_event):
+            return iter(())
+
+    class NestedCompleter(Completer):
+        def __init__(self, *args, **kwargs):
+            self.options = kwargs.get('options', {})
+
+    class WordCompleter(Completer):
+        def __init__(self, *args, **kwargs):
+            self.words = list(args[0]) if args else []
+            self.meta_dict = kwargs.get('meta_dict', {})
+            self.ignore_case = kwargs.get('ignore_case', True)
+
+        def get_completions(self, document, complete_event):
+            return iter(())
+
+    class Completion:
+        def __init__(self, text, start_position, display=None, display_meta=None):
+            self.text = text
+            self.start_position = start_position
+            self.display = display
+            self.display_meta = display_meta
+
+    class Document:
+        def __init__(self, text, cursor_position=0):
+            self.text = text
+            self.cursor_position = cursor_position
+            self.text_before_cursor = text[:cursor_position] if cursor_position <= len(text) else text
 
 from chameleon_enum import Status
 

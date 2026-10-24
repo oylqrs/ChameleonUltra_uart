@@ -1052,7 +1052,8 @@ class HWConnect(BaseCLIUnit):
             print(f" {{ Chameleon {model} connected: v{major}.{minor} }}")
 
         except Exception as e:
-            print(color_string((CR, f"Chameleon Connect fail: {str(e)}")))
+            safe_msg = str(e).encode('ascii', 'replace').decode('ascii')
+            print(color_string((CR, f"Chameleon Connect fail: {safe_msg}")))
             self.device_com.close()
 
 

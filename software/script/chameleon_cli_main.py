@@ -7,9 +7,24 @@ import colorama
 import chameleon_cli_unit
 import chameleon_utils
 import pathlib
-import prompt_toolkit
-from prompt_toolkit.formatted_text import ANSI
-from prompt_toolkit.history import FileHistory
+
+try:
+    import prompt_toolkit
+    from prompt_toolkit.formatted_text import ANSI
+    from prompt_toolkit.history import FileHistory
+except ModuleNotFoundError:  # pragma: no cover - optional dependency for interactive shell
+    prompt_toolkit = None
+
+    class ANSI(str):
+        def __new__(cls, value):
+            return str.__new__(cls, value)
+
+    class FileHistory:
+        def __init__(self, *args, **kwargs):
+            self.path = args[0] if args else None
+
+    prompt_toolkit = type('PromptToolkitFallback', (), {'PromptSession': None})()
+
 from chameleon_utils import CR, CG, CY, color_string
 
 ULTRA = r"""
@@ -146,9 +161,10 @@ class ChameleonCLI:
                 raise error
 
         except (chameleon_utils.UnexpectedResponseError, chameleon_utils.ArgsParserError) as e:
-            print(color_string((CR, str(e))))
+            print(color_string((CR, str(e).encode('ascii', 'replace').decode('ascii'))))
         except Exception:
-            print(f"CLI exception: {color_string((CR, traceback.format_exc()))}")
+            safe_trace = traceback.format_exc().encode('ascii', 'replace').decode('ascii')
+            print(f"CLI exception: {color_string((CR, safe_trace))}")
 
     def startCLI(self):
         """
@@ -157,9 +173,15 @@ class ChameleonCLI:
         :return:
         """
         self.completer = chameleon_utils.CustomNestedCompleter.from_clitree(chameleon_cli_unit.root)
-        self.session = prompt_toolkit.PromptSession(completer=self.completer,
-                                                    history=FileHistory(str(pathlib.Path.home() /
-                                                                            ".chameleon_history")))
+
+        if prompt_toolkit is not None and getattr(prompt_toolkit, 'PromptSession', None) is not None:
+            self.session = prompt_toolkit.PromptSession(completer=self.completer,
+                                                        history=FileHistory(str(pathlib.Path.home() /
+                                                                                ".chameleon_history")))
+            prompt_method = lambda prompt_text: self.session.prompt(prompt_text)
+        else:
+            self.session = None
+            prompt_method = lambda prompt_text: input(prompt_text)
 
         self.print_banner()
         cmd_strs = []
@@ -169,8 +191,7 @@ class ChameleonCLI:
             else:
                 # wait user input
                 try:
-                    cmd_str = self.session.prompt(
-                        self.get_prompt()).strip()
+                    cmd_str = prompt_method(self.get_prompt()).strip()
                     cmd_strs = cmd_str.replace(
                         "\r\n", "\n").replace("\r", "\n").split("\n")
                     cmd_str = cmd_strs.pop(0)
